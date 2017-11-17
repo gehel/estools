@@ -10,9 +10,11 @@ setup(name='estools',
       packages=['estools'],
       install_requires=[
             'cumin',
+            'python-dateutil',
             'pyyaml',
             'elasticsearch>=5.0.0,<6.0.0',
             'elasticsearch-curator>=5.0.0,<6.0.0',
-            'git+ssh://git@github.com/wikimedia/operations-switchdc.git#egg=switchdc'
+            'git+ssh://git@github.com/wikimedia/operations-switchdc.git#egg=switchdc',
+            'virtualfish'
       ],
       zip_safe=False)

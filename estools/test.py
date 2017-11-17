@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 import yaml
 from cumin.transport import Transport
 from cumin.transports import Target
+from dateutil import parser
 from elasticsearch import Elasticsearch
 
 from estools import Datacenter
@@ -10,20 +11,21 @@ from estools.should_be_externalized import Node
 with open('/home/gehel/.cumin/config.yaml', 'r') as f:
     cumin_config = yaml.safe_load(f)
 #
-dc = Datacenter(cumin_config, sudo=True, dry_run=True)
-
-es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
-
+# dc = Datacenter(cumin_config, sudo=True, dry_run=True)
+#
+# es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
+#
 # cluster = ElasticsearchCluster(es, cumin_config=None, node_suffix='codfw.wmnet', dry_run=True)
-cluster = dc.elasticsearch_cluster('test', 'local')
-
-cluster.wait_for_green(timedelta(seconds=30))
+# cluster = dc.elasticsearch_cluster('test', 'local')
+#
+# cluster.wait_for_green(timedelta(seconds=30))
 
 # start_time = datetime.utcnow() - timedelta(days=3)
 # node = cluster.next_node(restart_start_time=start_time)
 #
-# node = Node('elastic2029.codfw.wmnet', cumin_config, False, None)
-# up = node.uptime()
+node = Node('elastic1041.codfw.wmnet', cumin_config, dry_run=False, icinga=None, sudo=False)
+start_time = parser.parse('2017-11-16T09:11:00')
+node.wait_for_reboot(start_time)
 #
 # print up
 
