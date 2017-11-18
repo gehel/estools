@@ -119,7 +119,7 @@ class ElasticsearchCluster(object):
         if not self.dry_run:
             try:
                 self.elasticsearch.indices.flush_synced()
-            except ConflictError as e:
+            except ConflictError:
                 self.logger.exception('Not all shards have been flushed, which should not be an issue.')
 
     def _do_cluster_routing(self, cluster_routing):

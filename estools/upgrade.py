@@ -26,7 +26,7 @@ def upgrade_cluster(task, start_time, wait_for_relocations):
     cluster = dc.elasticsearch_cluster('test', 'local')
 
     while True:
-        nodes = cluster.next_nodes(start_time, n=2)
+        nodes = cluster.next_nodes(start_time, n=3)
         if not nodes:
             break
 
@@ -46,20 +46,22 @@ def upgrade_nodes(cluster, nodes, message, wait_for_relocations):
         node.schedule_downtime(duration=timedelta(minutes=30), message=message)
         node.disable_puppet(message)
 
-    timed(action=lambda: cluster.stop_replication(wait_for_relocations), message='stop replication')
-    timed(action=cluster.flush_markers, message='flush markers')
+    try:
+        timed(action=lambda: cluster.stop_replication(wait_for_relocations), message='stop replication')
+        timed(action=cluster.flush_markers, message='flush markers')
 
-    for node in nodes:
-        node.depool()
-        node.stop_elasticsearch()
-        timed(action=node.upgrade_elasticsearch, message='upgrade elasticsearch')
-        timed(action=node.reboot, message='reboot')
-        timed(action=node.wait_for_elasticsearch, message='wait for elasticsearch')
-        node.pool()
-        node.enable_puppet(message)
-        logger.info('upgrade done for %s', node)
+        for node in nodes:
+            node.depool()
+            node.stop_elasticsearch()
+            timed(action=node.upgrade_elasticsearch, message='upgrade elasticsearch')
+            timed(action=node.reboot, message='reboot')
+            timed(action=node.wait_for_elasticsearch, message='wait for elasticsearch')
+            node.pool()
+            node.enable_puppet(message)
+            logger.info('upgrade done for %s', node)
 
-    cluster.start_replication(wait=False)
+    finally:
+        cluster.start_replication(wait=False)
 
     logger.info('waiting for cluster to stabilize before next node')
     timed(action=lambda: cluster.wait_for_green(timeout=timedelta(minutes=90)), message='wait for green')
