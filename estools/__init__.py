@@ -1,12 +1,13 @@
 from __future__ import print_function
 
+import re
 from datetime import datetime, timedelta
 
 import logging
 import curator
 from elasticsearch import Elasticsearch, TransportError, ConflictError
 
-from estools.should_be_externalized import Node, Icinga, RemoteExecutionError
+from estools.should_be_externalized import Nodes, Icinga, RemoteExecutionError
 from estools.utils import wait_for
 
 elasticsearch_clusters = {
@@ -32,8 +33,8 @@ elasticsearch_clusters = {
     'test': {
         'local': {
             'endpoint': 'localhost:9200',
-            'suffix': 'codfw.wmnet',
-            'dc_name': 'codfw',
+            'suffix': 'eqiad.wmnet',
+            'dc_name': 'eqiad',
         },
     },
 }
@@ -115,7 +116,21 @@ class ElasticsearchCluster(object):
     def write_queue_status(self):
         # mwscript showJobs.php --wiki=enwiki --group | grep ^cirrusSearchElasticaWrite
         # cirrusSearchElasticaWrite: 0 queued; 0 claimed (0 active, 0 abandoned); 172 delayed
-        pass
+        _, message = self.script_node.mwscript('showJobs.php', ['--wiki=enwiki',  '--group'], safe=True)
+        #cirrusSearchElasticaWrite
+        match = re.search(
+            r'^ChangeNotification: (?P<queued>\d+) queued; (?P<claimed>\d+) claimed \((?P<active>\d+) active, (?P<abandoned>\d+) abandoned\); (?P<delayed>\d+) delayed$',
+            message, flags=re.M)
+        if match:
+            return {
+                'queued': int(match.group('queued')),
+                'claimed': int(match.group('claimed')),
+                'active': int(match.group('active')),
+                'abandoned': int(match.group('abandoned')),
+                'delayed': int(match.group('delayed'))
+            }
+        else:
+            return {}
 
     def stop_replication(self, wait=True):
         self.logger.info('stop replication')
@@ -131,10 +146,14 @@ class ElasticsearchCluster(object):
                                    value='all', wait_for_completion=wait)
         )
 
-    def wait_for_green(self, timeout=timedelta(hours=1)):
+    def wait_for_green(self, timeout=timedelta(hours=1), max_delayed_jobs=None):
         self.logger.info('waiting for cluster to be green')
 
         def green():
+            if max_delayed_jobs:
+                status = self.write_queue_status()
+                if status and status['delayed'] > max_delayed_jobs:
+                    raise MaxWriteQueueExceeded(status)
             return self.elasticsearch.cluster.health(wait_for_status='green', params={'timeout': '1s'})
         wait_for(green, retry_period=timedelta(seconds=10), timeout=timeout, ignored_exceptions=[TransportError])
         self.logger.info('cluster is green')
@@ -147,6 +166,14 @@ class ElasticsearchCluster(object):
             return len(relocations) == 0
         wait_for(no_relocations, retry_period=timedelta(seconds=10), timeout=timeout, ignored_exceptions=[TransportError])
         self.logger.info('no more relocations in progress')
+
+    def wait_for_write_queue_to_drain(self, timeout=timedelta(minutes=20)):
+        self.logger.info('waiting for relocations to stabilize')
+
+        def drained():
+            status = self.write_queue_status()
+            return status == {} or status['delayed'] == 0
+        wait_for(drained, retry_period=timedelta(seconds=10), timeout=timeout)
 
     def flush_markers(self):
         self.logger.info('flush markers')
@@ -198,10 +225,10 @@ class ElasticsearchCluster(object):
         return b
 
 
-class ElasticNodes(Node):
+class ElasticNodes(Nodes):
 
-    def __init__(self, fqdn, cumin_config, dry_run, icinga, sudo):
-        super(ElasticNodes, self).__init__(fqdn, cumin_config, dry_run, icinga, sudo)
+    def __init__(self, fqdns, cumin_config, dry_run, icinga, sudo):
+        super(ElasticNodes, self).__init__(fqdns, cumin_config, dry_run, icinga, sudo)
 
     def stop_elasticsearch(self):
         self.stop_service('elasticsearch')
@@ -224,15 +251,14 @@ class ElasticNodes(Node):
         self.upgrade_packages(['elasticsearch', 'wmf-elasticsearch-search-plugins'])
 
 
-class ScriptNode(Node):
+class ScriptNode(Nodes):
 
     def __init__(self, fqdn, cumin_config, dry_run, icinga):
-        super(ScriptNode, self).__init__(fqdn, cumin_config, dry_run, icinga, sudo=False)
-        assert len(fqdn) == 1
+        super(ScriptNode, self).__init__([fqdn], cumin_config, dry_run, icinga, sudo=False)
 
     def mwscript(self, script, args, safe=False):
         args_string = ' '.join(args)
-        return self.execute(
+        return self.execute_single(
             'mwscript {script} {args}'.format(script=script, args=args_string),
             safe
         )
@@ -241,3 +267,9 @@ class ScriptNode(Node):
 class ConfigError(Exception):
     pass
 
+
+class MaxWriteQueueExceeded(Exception):
+
+    def __init__(self, queue_status, *args):
+        super(MaxWriteQueueExceeded, self).__init__(*args)
+        self.queue_status = queue_status

@@ -128,11 +128,17 @@ class Nodes(object):
             return
         self.wait_for_reboot(reboot_time)
 
+    def execute_single(self, command, safe):
+        rc, results = self.execute(command, safe)
+        # we executed on a single node, there should be a single result
+        for _, message in results:
+            return rc, message
+
     def execute(self, command, safe, transform=lambda x: x):
         self.logger.info('executing [%s] on %s', command, self)
         if self.dry_run and not safe:
             return
-        worker = Transport.new(self.cumin_config, Target([self.fqdn]))
+        worker = Transport.new(self.cumin_config, Target(self.fqdns))
         if self.sudo:
             worker.commands = ['sudo ' + command]
         else:
@@ -141,14 +147,13 @@ class Nodes(object):
 
         rc = worker.execute()
 
-        return rc, [(host, transform(message)) for host, message in worker.get_results()]
+        return rc, [(host, transform(result.message())) for host, result in worker.get_results()]
 
 
 class Icinga(Nodes):
 
     def __init__(self, fqdn, cumin_config, sudo, dry_run):
-        super(Icinga, self).__init__(fqdn, cumin_config, dry_run, self, sudo)
-        assert len(fqdn) == 1
+        super(Icinga, self).__init__([fqdn], cumin_config, dry_run, self, sudo)
         self.logger = logging.getLogger('estools.icinga')
 
     def downtime(self, nodes, duration, message):

@@ -1,14 +1,21 @@
 from __future__ import print_function
+
 from dateutil import parser
 import logging
 import yaml
 from datetime import timedelta
 import time
 
-from estools import Datacenter
+from tqdm import tqdm
+
+from estools import Datacenter, ElasticNodes, MaxWriteQueueExceeded
 from estools.utils import timed
 
-logging.basicConfig(level=logging.DEBUG)
+
+logging.basicConfig(level=logging.DEBUG, stream=tqdm)
+
+logging.getLogger()
+
 logger = logging.getLogger('estools.upgrade')
 logging.getLogger('curator').setLevel(logging.WARNING)
 logging.getLogger('urllib3').setLevel(logging.WARNING)
@@ -92,18 +99,24 @@ def reboot_nodes(cluster, nodes, message, wait_for_relocations):
     finally:
         cluster.start_replication(wait=False)
 
-    time.sleep(300)
+    try:
+        timed(action=lambda: cluster.wait_for_green(timeout=timedelta(minutes=30), max_delayed_jobs=15000), message='wait for green')
+    except MaxWriteQueueExceeded as e:
+        logger.warn('Write queue size has grown too large, unfreezing writes (delayed jobs: )', e.queue_status['delayed'])
+
     cluster.thaw_writes()
 
     logger.info('waiting for cluster to stabilize before next node')
-    timed(action=lambda: cluster.wait_for_green(timeout=timedelta(minutes=90)), message='wait for green')
+    timed(action=lambda: cluster.wait_for_green(timeout=timedelta(minutes=60)), message='wait for green')
+
+    timed(action=cluster.wait_for_write_queue_to_drain, message="wait for write queue to drain")
 
     if wait_for_relocations:
         timed(action=lambda: cluster.wait_for_no_relocations(timeout=timedelta(minutes=20)), message='wait for no relocation')
 
 
 if __name__ == '__main__':
-    start_time = parser.parse('2018-01-09T12:00:00')
+    start_time = parser.parse('2018-01-15T12:00:00')
     execute_on_cluster(
         message='upgrading elasticsearch cluster',
         phab_number=None,
@@ -111,3 +124,13 @@ if __name__ == '__main__':
         wait_for_relocations=False,
         task=reboot_nodes,
         dry_run=False)
+
+    # with open('/home/gehel/.cumin/config.yaml', 'r') as f:
+    #     cumin_config = yaml.safe_load(f)
+    # dc = Datacenter(cumin_config, sudo=True, dry_run=True)
+    # cluster = dc.elasticsearch_cluster('test', 'local')
+    # status = cluster.write_queue_status()
+    # print(status)
+    # fqdns = ['elastic1030.eqiad.wmnet', 'elastic10332.eqiad.wmnet', 'elastic1035.eqiad.wmnet']
+    # nodes = ElasticNodes(fqdns, cumin_config, dry_run=False, icinga=dc.icinga(), sudo=True)
+    # nodes.wait_for_reboot(start_time)
