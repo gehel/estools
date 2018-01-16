@@ -114,12 +114,9 @@ class ElasticsearchCluster(object):
         )
 
     def write_queue_status(self):
-        # mwscript showJobs.php --wiki=enwiki --group | grep ^cirrusSearchElasticaWrite
-        # cirrusSearchElasticaWrite: 0 queued; 0 claimed (0 active, 0 abandoned); 172 delayed
         _, message = self.script_node.mwscript('showJobs.php', ['--wiki=enwiki',  '--group'], safe=True)
-        #cirrusSearchElasticaWrite
         match = re.search(
-            r'^ChangeNotification: (?P<queued>\d+) queued; (?P<claimed>\d+) claimed \((?P<active>\d+) active, (?P<abandoned>\d+) abandoned\); (?P<delayed>\d+) delayed$',
+            r'^cirrusSearchElasticaWrite: (?P<queued>\d+) queued; (?P<claimed>\d+) claimed \((?P<active>\d+) active, (?P<abandoned>\d+) abandoned\); (?P<delayed>\d+) delayed$',
             message, flags=re.M)
         if match:
             return {

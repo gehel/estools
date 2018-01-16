@@ -137,7 +137,7 @@ class Nodes(object):
     def execute(self, command, safe, transform=lambda x: x):
         self.logger.info('executing [%s] on %s', command, self)
         if self.dry_run and not safe:
-            return
+            return 0, [(None, '')]
         worker = Transport.new(self.cumin_config, Target(self.fqdns))
         if self.sudo:
             worker.commands = ['sudo ' + command]

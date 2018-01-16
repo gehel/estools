@@ -9,8 +9,7 @@ import time
 from tqdm import tqdm
 
 from estools import Datacenter, ElasticNodes, MaxWriteQueueExceeded
-from estools.utils import timed
-
+from estools.utils import timed, TimeoutException
 
 logging.basicConfig(level=logging.DEBUG, stream=tqdm)
 
@@ -82,6 +81,7 @@ def reboot_nodes(cluster, nodes, message, wait_for_relocations):
 
     cluster.freeze_writes()
 
+    logger.info('waiting for writes to settle')
     time.sleep(60)
 
     nodes.schedule_downtime(duration=timedelta(minutes=30), message=message)
@@ -102,7 +102,9 @@ def reboot_nodes(cluster, nodes, message, wait_for_relocations):
     try:
         timed(action=lambda: cluster.wait_for_green(timeout=timedelta(minutes=30), max_delayed_jobs=15000), message='wait for green')
     except MaxWriteQueueExceeded as e:
-        logger.warn('Write queue size has grown too large, unfreezing writes (delayed jobs: )', e.queue_status['delayed'])
+        logger.warn('Write queue size has grown too large, unfreezing writes (delayed jobs: %d)', e.queue_status['delayed'])
+    except TimeoutException:
+        logger.warn('Timeout exceeded, thawing writes and continuing.')
 
     cluster.thaw_writes()
 
