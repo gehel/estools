@@ -79,36 +79,30 @@ def reboot_nodes(cluster, nodes, message, wait_for_relocations):
 
     timed(action=lambda: cluster.wait_for_green(timeout=timedelta(minutes=90)), message='wait for green')
 
-    cluster.freeze_writes()
+    with cluster.frozen_writes():
 
-    logger.info('waiting for writes to settle')
-    time.sleep(60)
+        logger.info('waiting for writes to settle')
+        time.sleep(60)
 
-    nodes.schedule_downtime(duration=timedelta(minutes=30), message=message)
+        nodes.schedule_downtime(duration=timedelta(minutes=30), message=message)
 
-    try:
-        timed(action=lambda: cluster.stop_replication(wait_for_relocations), message='stop replication')
-        timed(action=cluster.flush_markers, message='flush markers')
+        with cluster.stopped_replication(wait=False):
+            timed(action=cluster.flush_markers, message='flush markers')
 
-        nodes.depool()
-        timed(action=nodes.reboot, message='reboot')
-        timed(action=nodes.wait_for_elasticsearch, message='wait for elasticsearch')
-        nodes.pool()
-        logger.info('reboot done for %s', nodes)
+            nodes.depool()
+            timed(action=nodes.reboot, message='reboot')
+            timed(action=nodes.wait_for_elasticsearch, message='wait for elasticsearch')
+            nodes.pool()
+            logger.info('reboot done for %s', nodes)
 
-    finally:
-        cluster.start_replication(wait=False)
+        try:
+            timed(action=lambda: cluster.wait_for_green(timeout=timedelta(minutes=30), max_delayed_jobs=15000), message='wait for green')
+        except MaxWriteQueueExceeded as e:
+            logger.warn('Write queue size has grown too large, unfreezing writes (delayed jobs: %d)', e.queue_status['delayed'])
+        except TimeoutException:
+            logger.warn('Timeout exceeded, thawing writes and continuing.')
 
-    try:
-        timed(action=lambda: cluster.wait_for_green(timeout=timedelta(minutes=30), max_delayed_jobs=15000), message='wait for green')
-    except MaxWriteQueueExceeded as e:
-        logger.warn('Write queue size has grown too large, unfreezing writes (delayed jobs: %d)', e.queue_status['delayed'])
-    except TimeoutException:
-        logger.warn('Timeout exceeded, thawing writes and continuing.')
-
-    cluster.thaw_writes()
-
-    logger.info('waiting for cluster to stabilize before next node')
+    logger.info('waiting for cluster to stabilize before next nodes')
     timed(action=lambda: cluster.wait_for_green(timeout=timedelta(minutes=60)), message='wait for green')
 
     timed(action=cluster.wait_for_write_queue_to_drain, message="wait for write queue to drain")

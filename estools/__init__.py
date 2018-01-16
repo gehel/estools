@@ -1,6 +1,7 @@
 from __future__ import print_function
 
 import re
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 import logging
@@ -8,7 +9,7 @@ import curator
 from elasticsearch import Elasticsearch, TransportError, ConflictError
 
 from estools.should_be_externalized import Nodes, Icinga, RemoteExecutionError
-from estools.utils import wait_for
+from estools.utils import wait_for, timed
 
 elasticsearch_clusters = {
     'search': {
@@ -94,7 +95,13 @@ class ElasticsearchCluster(object):
         self.dry_run = dry_run
         self.logger = logging.getLogger('estools.cluster')
 
-    def freeze_writes(self):
+    @contextmanager
+    def frozen_writes(self):
+        self._freeze_writes()
+        yield
+        self._thaw_writes()
+
+    def _freeze_writes(self):
         self.script_node.mwscript(
             'extensions/CirrusSearch/maintenance/freezeWritesToCluster.php',
             [
@@ -103,7 +110,7 @@ class ElasticsearchCluster(object):
             ]
         )
 
-    def thaw_writes(self):
+    def _thaw_writes(self):
         self.script_node.mwscript(
             'extensions/CirrusSearch/maintenance/freezeWritesToCluster.php',
             [
@@ -129,14 +136,20 @@ class ElasticsearchCluster(object):
         else:
             return {}
 
-    def stop_replication(self, wait=True):
+    @contextmanager
+    def stopped_replication(self, wait=True):
+        self._stop_replication(wait)
+        yield
+        self._start_replication(wait)
+
+    def _stop_replication(self, wait=True):
         self.logger.info('stop replication')
         self._do_cluster_routing(
             curator.ClusterRouting(self.elasticsearch, routing_type='allocation', setting='enable',
                                    value='primaries', wait_for_completion=wait)
         )
 
-    def start_replication(self, wait=True):
+    def _start_replication(self, wait=True):
         self.logger.info('start replication')
         self._do_cluster_routing(
             curator.ClusterRouting(self.elasticsearch, routing_type='allocation', setting='enable',

@@ -17,6 +17,7 @@ class Nodes(object):
     def __init__(self, fqdns, cumin_config, dry_run, icinga, sudo):
         assert isinstance(fqdns, list)
         self.fqdns = fqdns
+        self._target = Target(fqdns)
         self.cumin_config = cumin_config
         self.dry_run = dry_run
         self.icinga = icinga
@@ -24,9 +25,20 @@ class Nodes(object):
         self.logger = logging.getLogger('estools.node')
 
     def __repr__(self):
-        return 'Node({nodes})'.format(nodes=self.fqdns)
+        """
+        >>> Nodes(['myhost.example.net', 'myotherhost.example.net'], cumin_config={}, dry_run=True, icinga=None, sudo=False)
+        Node(myhost.example.net,myotherhost.example.net)
+        >>> Nodes(['host1.example.net', 'host2.example.net', 'host3.example.net'], cumin_config={}, dry_run=True, icinga=None, sudo=False)
+        Node(host[1-3].example.net)
+        """
+        return 'Node({nodes})'.format(nodes=self._target.hosts)
 
     def hostnames(self):
+        """
+        >>> nodes = Nodes(['myhost.example.net', 'myotherhost.example.net'], cumin_config={}, dry_run=True, icinga=None, sudo=False)
+        >>> nodes.hostnames()
+        ['myhost', 'myotherhost']
+        """
         return [f.split('.')[0] for f in self.fqdns]
 
     def run_puppet_agent(self):
@@ -81,7 +93,7 @@ class Nodes(object):
             raise RemoteExecutionError('Service {name} is still stopped.'.format(name=name))
 
     def is_service_running(self, name):
-        rc, _ = self.execute('service {name} status'.format(name=name), safe=False)
+        rc, _ = self.execute('service {name} status'.format(name=name), safe=True)
         if rc == 0:
             self.logger.info('service [%s] is running on %s', name, self)
         else:
@@ -94,7 +106,8 @@ class Nodes(object):
             'apt-get {options} install {packages}'.format(
                 options='-o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"',
                 packages=' '.join(packages)
-            ), safe=False)
+            ),
+            safe=False)
 
     def max_uptime(self):
         def parse_uptime(message):
@@ -138,7 +151,7 @@ class Nodes(object):
         self.logger.info('executing [%s] on %s', command, self)
         if self.dry_run and not safe:
             return 0, [(None, '')]
-        worker = Transport.new(self.cumin_config, Target(self.fqdns))
+        worker = Transport.new(self.cumin_config, self._target)
         if self.sudo:
             worker.commands = ['sudo ' + command]
         else:
