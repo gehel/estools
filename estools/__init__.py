@@ -189,6 +189,10 @@ class ElasticsearchCluster(object):
         self.logger.info('flush markers')
         if not self.dry_run:
             try:
+                self.elasticsearch.indices.flush(force=True)
+            except ConflictError:
+                self.logger.exception('Not all shards have been flushed, which should not be an issue.')
+            try:
                 self.elasticsearch.indices.flush_synced()
             except ConflictError:
                 self.logger.exception('Not all shards have been flushed, which should not be an issue.')
