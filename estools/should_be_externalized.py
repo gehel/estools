@@ -12,19 +12,34 @@ class RemoteExecutionError(Exception):
     pass
 
 
-class Node(object):
+class Nodes(object):
 
-    def __init__(self, fqdn, cumin_config, dry_run, icinga, sudo):
-        self.fqdn = fqdn
+    def __init__(self, fqdns, cumin_config, dry_run, icinga, sudo):
+        assert isinstance(fqdns, list)
+        self.fqdns = fqdns
+        self._target = Target(fqdns)
         self.cumin_config = cumin_config
         self.dry_run = dry_run
         self.icinga = icinga
         self.sudo = sudo
         self.logger = logging.getLogger('estools.node')
-        self.hostname = fqdn.split('.')[0]
 
     def __repr__(self):
-        return 'Node({node})'.format(node=self.fqdn)
+        """
+        >>> Nodes(['myhost.example.net', 'myotherhost.example.net'], cumin_config={}, dry_run=True, icinga=None, sudo=False)
+        Node(myhost.example.net,myotherhost.example.net)
+        >>> Nodes(['host1.example.net', 'host2.example.net', 'host3.example.net'], cumin_config={}, dry_run=True, icinga=None, sudo=False)
+        Node(host[1-3].example.net)
+        """
+        return 'Node({nodes})'.format(nodes=self._target.hosts)
+
+    def hostnames(self):
+        """
+        >>> nodes = Nodes(['myhost.example.net', 'myotherhost.example.net'], cumin_config={}, dry_run=True, icinga=None, sudo=False)
+        >>> nodes.hostnames()
+        ['myhost', 'myotherhost']
+        """
+        return [f.split('.')[0] for f in self.fqdns]
 
     def run_puppet_agent(self):
         self.logger.info('run puppet on %s', self)
@@ -78,7 +93,7 @@ class Node(object):
             raise RemoteExecutionError('Service {name} is still stopped.'.format(name=name))
 
     def is_service_running(self, name):
-        rc, message = self.execute('service {name} status'.format(name=name), safe=False)
+        rc, _ = self.execute('service {name} status'.format(name=name), safe=True)
         if rc == 0:
             self.logger.info('service [%s] is running on %s', name, self)
         else:
@@ -91,18 +106,23 @@ class Node(object):
             'apt-get {options} install {packages}'.format(
                 options='-o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"',
                 packages=' '.join(packages)
-            ), safe=False)
+            ),
+            safe=False)
 
-    def uptime(self):
-        _, message = self.execute('cat /proc/uptime', safe=True)
-        uptime_in_seconds = float(message.strip().split()[0])
-        uptime = timedelta(seconds=uptime_in_seconds)
-        self.logger.debug('uptime is [%s] on %s', uptime, self)
-        return uptime
+    def max_uptime(self):
+        def parse_uptime(message):
+            uptime_in_seconds = float(message.strip().split()[0])
+            return timedelta(seconds=uptime_in_seconds)
+
+        _, results = self.execute('cat /proc/uptime', safe=True, transform=parse_uptime)
+
+        for hosts, uptime in results:
+            self.logger.debug('uptime is [%s] on %s', uptime, hosts)
+        return max([uptime for _, uptime in results])
 
     def wait_for_reboot(self, reboot_time, retry_period=timedelta(seconds=1), timeout=timedelta(minutes=10)):
         def check_uptime():
-            return self.uptime() < datetime.utcnow() - reboot_time
+            return self.max_uptime() < datetime.utcnow() - reboot_time
 
         wait_for(
             check_uptime,
@@ -121,11 +141,17 @@ class Node(object):
             return
         self.wait_for_reboot(reboot_time)
 
-    def execute(self, command, safe):
+    def execute_single(self, command, safe):
+        rc, results = self.execute(command, safe)
+        # we executed on a single node, there should be a single result
+        for _, message in results:
+            return rc, message
+
+    def execute(self, command, safe, transform=lambda x: x):
         self.logger.info('executing [%s] on %s', command, self)
         if self.dry_run and not safe:
-            return
-        worker = Transport.new(self.cumin_config, Target([self.fqdn]))
+            return 0, [(None, '')]
+        worker = Transport.new(self.cumin_config, self._target)
         if self.sudo:
             worker.commands = ['sudo ' + command]
         else:
@@ -134,30 +160,26 @@ class Node(object):
 
         rc = worker.execute()
 
-        message = None
-        # we executed on a single node, there should be a single result
-        for _, output in worker.get_results():
-            message = output.message()
-        self.logger.debug(message)
-        return rc, message
+        return rc, [(host, transform(result.message())) for host, result in worker.get_results()]
 
 
-class Icinga(Node):
+class Icinga(Nodes):
 
     def __init__(self, fqdn, cumin_config, sudo, dry_run):
-        super(Icinga, self).__init__(fqdn, cumin_config, dry_run, self, sudo)
+        super(Icinga, self).__init__([fqdn], cumin_config, dry_run, self, sudo)
         self.logger = logging.getLogger('estools.icinga')
 
-    def downtime(self, node, duration, message):
-        self.logger.info('scheduling downtime for %s', node)
+    def downtime(self, nodes, duration, message):
+        self.logger.info('scheduling downtime for %s', nodes)
         if self.dry_run:
             return
 
-        rc, msg = self.execute('icinga-downtime -h {hostname} -d {duration} -r "{message}"'.format(
-            hostname=node.hostname,
-            duration=int(duration.total_seconds()),
-            message=message
-        ), safe=False)
+        for hostname in nodes.hostnames():
+            rc, _ = self.execute('icinga-downtime -h {hostname} -d {duration} -r "{message}"'.format(
+                hostname=hostname,
+                duration=int(duration.total_seconds()),
+                message=message
+            ), safe=False)
 
-        if rc != 0:
-            raise RemoteExecutionError('Could not downtime %s: %s', node, msg)
+            if rc != 0:
+                raise RemoteExecutionError('Could not downtime %s', nodes)

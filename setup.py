@@ -12,9 +12,12 @@ setup(name='estools',
             'cumin',
             'python-dateutil',
             'pyyaml',
+            'tqdm',
             'elasticsearch>=5.0.0,<6.0.0',
             'elasticsearch-curator>=5.0.0,<6.0.0',
             'git+ssh://git@github.com/wikimedia/operations-switchdc.git#egg=switchdc',
-            'virtualfish'
+            'virtualfish',
+            'freezegun',
+            'mock'
       ],
       zip_safe=False)

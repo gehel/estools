@@ -56,13 +56,22 @@ def wait_for(condition, timeout=timedelta(seconds=30), retry_period=timedelta(se
 
 
 def timed(action, message):
+    """
+    >>> from freezegun import freeze_time
+    >>> from datetime import timedelta
+    >>> from mock import patch
+    >>> with freeze_time() as t:
+    ...   timed(action=lambda: t.tick(timedelta(seconds=10)), message="my message")
+
+    """
     start_time = time.time()
     try:
-        action()
+        return action()
     finally:
         end_time = time.time()
         logger = logging.getLogger('estools.timer')
-        logger.debug('%s took %s seconds', message, end_time - start_time)
+        duration_in_seconds = end_time - start_time
+        logger.debug('%s took %s seconds', message, duration_in_seconds)
 
 
 class TimeoutException(Exception):

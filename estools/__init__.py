@@ -1,35 +1,41 @@
 from __future__ import print_function
 
+import re
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 import logging
 import curator
 from elasticsearch import Elasticsearch, TransportError, ConflictError
 
-from estools.should_be_externalized import Node, Icinga, RemoteExecutionError
-from estools.utils import wait_for
+from estools.should_be_externalized import Nodes, Icinga, RemoteExecutionError
+from estools.utils import wait_for, timed
 
 elasticsearch_clusters = {
     'search': {
         'eqiad': {
             'endpoint': 'search.svc.eqiad.wmnet:9200',
             'suffix': 'eqiad.wmnet',
+            'dc_name': 'eqiad',
         },
         'codfw': {
             'endpoint': 'search.svc.codfw.wmnet:9200',
             'suffix': 'codfw.wmnet',
+            'dc_name': 'codfw',
         },
     },
     'relforge': {
         'eqiad': {
             'endpoint': 'relforge1002.eqiad.wmnet:9200',
             'suffix': 'eqiad.wmnet',
+            'dc_name': 'eqiad',
         },
     },
     'test': {
         'local': {
             'endpoint': 'localhost:9200',
             'suffix': 'eqiad.wmnet',
+            'dc_name': 'eqiad',
         },
     },
 }
@@ -42,7 +48,10 @@ class Datacenter(object):
         self.dry_run = dry_run
 
     def icinga(self):
-        return Icinga('einsteinium.wikimedia.org', self.cumin_config, self.sudo, self.dry_run)
+        return Icinga('icinga.wikimedia.org', self.cumin_config, self.sudo, self.dry_run)
+
+    def script_node(self):
+        return ScriptNode('terbium.eqiad.wmnet', self.cumin_config, self.dry_run, self.icinga())
 
     def elasticsearch_cluster(self, name, site):
         """Create an ElasticsearchCluster object for the given cluster / DC
@@ -68,14 +77,17 @@ class Datacenter(object):
         try:
             endpoint = elasticsearch_clusters[name][site]['endpoint']
             suffix = elasticsearch_clusters[name][site]['suffix']
-            return ElasticsearchCluster(Elasticsearch(endpoint), self.cumin_config, suffix, self.icinga(), self.sudo, self.dry_run)
+            dc_name = elasticsearch_clusters[name][site]['dc_name']
+            return ElasticsearchCluster(Elasticsearch(endpoint), dc_name, self.script_node(), self.cumin_config, suffix, self.icinga(), self.sudo, self.dry_run)
         except KeyError:
             raise ConfigError('No cluster named {name} exist in DC {site}'.format(name=name, site=site))
 
 
 class ElasticsearchCluster(object):
-    def __init__(self, elasticsearch, cumin_config, node_suffix, icinga, sudo, dry_run=False):
+    def __init__(self, elasticsearch, dc_name, script_node, cumin_config, node_suffix, icinga, sudo, dry_run=False):
         self.elasticsearch = elasticsearch
+        self.dc_name = dc_name
+        self.script_node = script_node
         self.cumin_config = cumin_config
         self.node_suffix = node_suffix
         self.icinga = icinga
@@ -83,24 +95,75 @@ class ElasticsearchCluster(object):
         self.dry_run = dry_run
         self.logger = logging.getLogger('estools.cluster')
 
-    def stop_replication(self, wait=True):
+    @contextmanager
+    def frozen_writes(self):
+        self._freeze_writes()
+        yield
+        self._thaw_writes()
+
+    def _freeze_writes(self):
+        self.script_node.mwscript(
+            'extensions/CirrusSearch/maintenance/freezeWritesToCluster.php',
+            [
+                '--wiki=enwiki',
+                '--cluster={cluster}'.format(cluster=self.dc_name)
+            ]
+        )
+
+    def _thaw_writes(self):
+        self.script_node.mwscript(
+            'extensions/CirrusSearch/maintenance/freezeWritesToCluster.php',
+            [
+                '--wiki=enwiki',
+                '--cluster={cluster}'.format(cluster=self.dc_name),
+                '--thaw'
+            ]
+        )
+
+    def write_queue_status(self):
+        _, message = self.script_node.mwscript('showJobs.php', ['--wiki=enwiki',  '--group'], safe=True)
+        match = re.search(
+            r'^cirrusSearchElasticaWrite: (?P<queued>\d+) queued; (?P<claimed>\d+) claimed \((?P<active>\d+) active, (?P<abandoned>\d+) abandoned\); (?P<delayed>\d+) delayed$',
+            message, flags=re.M)
+        if match:
+            return {
+                'queued': int(match.group('queued')),
+                'claimed': int(match.group('claimed')),
+                'active': int(match.group('active')),
+                'abandoned': int(match.group('abandoned')),
+                'delayed': int(match.group('delayed'))
+            }
+        else:
+            return {}
+
+    @contextmanager
+    def stopped_replication(self, wait=True):
+        self._stop_replication(wait)
+        yield
+        self._start_replication(wait)
+
+    def _stop_replication(self, wait=True):
         self.logger.info('stop replication')
         self._do_cluster_routing(
             curator.ClusterRouting(self.elasticsearch, routing_type='allocation', setting='enable',
                                    value='primaries', wait_for_completion=wait)
         )
 
-    def start_replication(self, wait=True):
+    def _start_replication(self, wait=True):
         self.logger.info('start replication')
         self._do_cluster_routing(
             curator.ClusterRouting(self.elasticsearch, routing_type='allocation', setting='enable',
                                    value='all', wait_for_completion=wait)
         )
 
-    def wait_for_green(self, timeout=timedelta(hours=1)):
+    def wait_for_green(self, timeout=timedelta(hours=1), max_delayed_jobs=None):
         self.logger.info('waiting for cluster to be green')
 
         def green():
+            if max_delayed_jobs:
+                status = self.write_queue_status()
+                if status and status['delayed'] > max_delayed_jobs:
+                    raise MaxWriteQueueExceeded(status)
             return self.elasticsearch.cluster.health(wait_for_status='green', params={'timeout': '1s'})
         wait_for(green, retry_period=timedelta(seconds=10), timeout=timeout, ignored_exceptions=[TransportError])
         self.logger.info('cluster is green')
@@ -114,9 +177,21 @@ class ElasticsearchCluster(object):
         wait_for(no_relocations, retry_period=timedelta(seconds=10), timeout=timeout, ignored_exceptions=[TransportError])
         self.logger.info('no more relocations in progress')
 
+    def wait_for_write_queue_to_drain(self, timeout=timedelta(minutes=20)):
+        self.logger.info('waiting for relocations to stabilize')
+
+        def drained():
+            status = self.write_queue_status()
+            return status == {} or status['delayed'] == 0
+        wait_for(drained, retry_period=timedelta(seconds=10), timeout=timeout)
+
     def flush_markers(self):
         self.logger.info('flush markers')
         if not self.dry_run:
+            try:
+                self.elasticsearch.indices.flush(force=True)
+            except ConflictError:
+                self.logger.exception('Not all shards have been flushed, which should not be an issue.')
             try:
                 self.elasticsearch.indices.flush_synced()
             except ConflictError:
@@ -138,8 +213,9 @@ class ElasticsearchCluster(object):
         s = sorted(rows.items(), cmp=compare_row_size)
         for row_name, row in s:
             if len(row['not_done']) > 0:
-                return [self._new_node(node['name']) for node in row['not_done'][:n]]
-        return []
+                nodes_names = [node['name'] + '.' + self.node_suffix for node in row['not_done'][:n]]
+                return ElasticNodes(nodes_names, self.cumin_config, self.dry_run, self.icinga, self.sudo)
+        return None
 
     def _to_rows(self, nodes, start_time):
         rows = {}
@@ -162,21 +238,17 @@ class ElasticsearchCluster(object):
         b = jvm_start > start_time
         return b
 
-    def _new_node(self, hostname):
-        fqdn = hostname + '.' + self.node_suffix
-        return ElasticNode(fqdn, self.cumin_config, self.dry_run, self.icinga, self.sudo)
 
+class ElasticNodes(Nodes):
 
-class ElasticNode(Node):
-
-    def __init__(self, fqdn, cumin_config, dry_run, icinga, sudo):
-        super(ElasticNode, self).__init__(fqdn, cumin_config, dry_run, icinga, sudo)
+    def __init__(self, fqdns, cumin_config, dry_run, icinga, sudo):
+        super(ElasticNodes, self).__init__(fqdns, cumin_config, dry_run, icinga, sudo)
 
     def stop_elasticsearch(self):
         self.stop_service('elasticsearch')
 
     def wait_for_elasticsearch(self):
-        self.logger.info('waiting for elasticsearch to bu up on %s', self)
+        self.logger.info('waiting for elasticsearch to be up on %s', self)
         wait_for(
             lambda: self.is_elasticsearch_up(),
             timeout=timedelta(seconds=300),
@@ -184,15 +256,34 @@ class ElasticNode(Node):
         )
 
     def is_elasticsearch_up(self):
-        rc, message = self.execute('curl -s 127.0.0.1:9200/_cat/health', safe=True)
+        rc, _ = self.execute('curl -s 127.0.0.1:9200/_cat/health', safe=True)
         if rc != 0:
-            self.logger.info('elasticsearch not yet up: %s', message)
+            self.logger.info('elasticsearch not yet up on all nodes')
         return rc == 0
 
     def upgrade_elasticsearch(self):
         self.upgrade_packages(['elasticsearch', 'wmf-elasticsearch-search-plugins'])
 
 
+class ScriptNode(Nodes):
+
+    def __init__(self, fqdn, cumin_config, dry_run, icinga):
+        super(ScriptNode, self).__init__([fqdn], cumin_config, dry_run, icinga, sudo=False)
+
+    def mwscript(self, script, args, safe=False):
+        args_string = ' '.join(args)
+        return self.execute_single(
+            'mwscript {script} {args}'.format(script=script, args=args_string),
+            safe
+        )
+
+
 class ConfigError(Exception):
     pass
 
+
+class MaxWriteQueueExceeded(Exception):
+
+    def __init__(self, queue_status, *args):
+        super(MaxWriteQueueExceeded, self).__init__(*args)
+        self.queue_status = queue_status
