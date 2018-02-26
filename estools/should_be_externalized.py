@@ -160,7 +160,7 @@ class Nodes(object):
 
         rc = worker.execute()
 
-        return rc, [(host, transform(result.message())) for host, result in worker.get_results()]
+        return rc, [(host, transform(result.message().decode('utf-8'))) for host, result in worker.get_results()]
 
 
 class Icinga(Nodes):
@@ -171,8 +171,6 @@ class Icinga(Nodes):
 
     def downtime(self, nodes, duration, message):
         self.logger.info('scheduling downtime for %s', nodes)
-        if self.dry_run:
-            return
 
         for hostname in nodes.hostnames():
             rc, _ = self.execute('icinga-downtime -h {hostname} -d {duration} -r "{message}"'.format(

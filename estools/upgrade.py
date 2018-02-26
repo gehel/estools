@@ -82,7 +82,7 @@ def reboot_nodes(cluster, nodes, message, wait_for_relocations):
     with cluster.frozen_writes():
 
         logger.info('waiting for writes to settle')
-        time.sleep(60)
+        #time.sleep(60)
 
         nodes.schedule_downtime(duration=timedelta(minutes=30), message=message)
 
@@ -112,14 +112,14 @@ def reboot_nodes(cluster, nodes, message, wait_for_relocations):
 
 
 if __name__ == '__main__':
-    start_time = parser.parse('2018-01-15T12:00:00')
+    start_time = parser.parse('2018-02-26T12:00:00')
     execute_on_cluster(
-        message='upgrading elasticsearch cluster',
+        message='rebooting elasticsearch cluster',
         phab_number=None,
         start_time=start_time,
         wait_for_relocations=False,
         task=reboot_nodes,
-        dry_run=False)
+        dry_run=True)
 
     # with open('/home/gehel/.cumin/config.yaml', 'r') as f:
     #     cumin_config = yaml.safe_load(f)

@@ -34,8 +34,8 @@ elasticsearch_clusters = {
     'test': {
         'local': {
             'endpoint': 'localhost:9200',
-            'suffix': 'eqiad.wmnet',
-            'dc_name': 'eqiad',
+            'suffix': 'codfw.wmnet',
+            'dc_name': 'codfw',
         },
     },
 }
@@ -207,10 +207,10 @@ class ElasticsearchCluster(object):
         info = self.elasticsearch.nodes.info()
         rows = self._to_rows(info['nodes'], restart_start_time)
 
-        def compare_row_size((_, val1), (__, val2)):
-            return len(val1['done']) - len(val2['done'])
+        def row_size(row):
+            return row[1]['done']
 
-        s = sorted(rows.items(), cmp=compare_row_size)
+        s = sorted(rows.items(), key=row_size)
         for row_name, row in s:
             if len(row['not_done']) > 0:
                 nodes_names = [node['name'] + '.' + self.node_suffix for node in row['not_done'][:n]]
