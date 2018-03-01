@@ -82,7 +82,7 @@ def reboot_nodes(cluster, nodes, message, wait_for_relocations):
     with cluster.frozen_writes():
 
         logger.info('waiting for writes to settle')
-        #time.sleep(60)
+        time.sleep(60)
 
         nodes.schedule_downtime(duration=timedelta(minutes=30), message=message)
 
@@ -103,7 +103,7 @@ def reboot_nodes(cluster, nodes, message, wait_for_relocations):
             logger.warn('Timeout exceeded, thawing writes and continuing.')
 
     logger.info('waiting for cluster to stabilize before next nodes')
-    timed(action=lambda: cluster.wait_for_green(timeout=timedelta(minutes=60)), message='wait for green')
+    timed(action=lambda: cluster.wait_for_green(timeout=timedelta(minutes=90)), message='wait for green')
 
     timed(action=cluster.wait_for_write_queue_to_drain, message="wait for write queue to drain")
 
@@ -112,14 +112,14 @@ def reboot_nodes(cluster, nodes, message, wait_for_relocations):
 
 
 if __name__ == '__main__':
-    start_time = parser.parse('2018-02-26T12:00:00')
+    start_time = parser.parse('2018-03-01T06:00:00')
     execute_on_cluster(
         message='rebooting elasticsearch cluster',
         phab_number=None,
         start_time=start_time,
         wait_for_relocations=False,
         task=reboot_nodes,
-        dry_run=True)
+        dry_run=False)
 
     # with open('/home/gehel/.cumin/config.yaml', 'r') as f:
     #     cumin_config = yaml.safe_load(f)

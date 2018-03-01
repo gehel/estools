@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 import logging
 import curator
-from elasticsearch import Elasticsearch, TransportError, ConflictError
+from elasticsearch import Elasticsearch, TransportError, ConflictError, RequestError
 
 from estools.should_be_externalized import Nodes, Icinga, RemoteExecutionError
 from estools.utils import wait_for, timed
@@ -34,8 +34,8 @@ elasticsearch_clusters = {
     'test': {
         'local': {
             'endpoint': 'localhost:9200',
-            'suffix': 'codfw.wmnet',
-            'dc_name': 'codfw',
+            'suffix': 'eqiad.wmnet',
+            'dc_name': 'eqiad',
         },
     },
 }
@@ -98,8 +98,10 @@ class ElasticsearchCluster(object):
     @contextmanager
     def frozen_writes(self):
         self._freeze_writes()
-        yield
-        self._thaw_writes()
+        try:
+            yield
+        finally:
+            self._thaw_writes()
 
     def _freeze_writes(self):
         self.script_node.mwscript(
@@ -139,8 +141,10 @@ class ElasticsearchCluster(object):
     @contextmanager
     def stopped_replication(self, wait=True):
         self._stop_replication(wait)
-        yield
-        self._start_replication(wait)
+        try:
+            yield
+        finally:
+            self._start_replication(wait)
 
     def _stop_replication(self, wait=True):
         self.logger.info('stop replication')
@@ -207,10 +211,7 @@ class ElasticsearchCluster(object):
         info = self.elasticsearch.nodes.info()
         rows = self._to_rows(info['nodes'], restart_start_time)
 
-        def row_size(row):
-            return row[1]['done']
-
-        s = sorted(rows.items(), key=row_size)
+        s = sorted(rows.items(), key=lambda row: len(row[1]['done']))
         for row_name, row in s:
             if len(row['not_done']) > 0:
                 nodes_names = [node['name'] + '.' + self.node_suffix for node in row['not_done'][:n]]
@@ -237,6 +238,36 @@ class ElasticsearchCluster(object):
         jvm_start = datetime.utcfromtimestamp(int(node['jvm']['start_time_in_millis'] / 1000))
         b = jvm_start > start_time
         return b
+
+    def force_allocation_of_all_replicas(self):
+        while True:
+            unassigned = self.unassigned_shards()
+            if len(unassigned) == 0:
+                # no more unassigned shards, we're done
+                return
+            self.force_allocation_of_shard(unassigned[0])
+
+    def unassigned_shards(self):
+        shards = self.elasticsearch.cat.shards(format='json', h='index,shard,state')
+        return [s for s in shards if s['state'] == 'UNASSIGNED']
+
+    def force_allocation_of_shard(self, shard):
+        nodes = self.elasticsearch.cat.nodes(h='name')
+        for node in nodes.splitlines():
+            try:
+                self.elasticsearch.cluster.reroute(body={
+                    'commands': [{
+                        'allocate_replica': {
+                            'index': shard['index'], 'shard': shard['shard'],
+                            'node': node
+                        }
+                    }]
+                })
+                # successful allocation, we can exit
+                return
+            except RequestError:
+                # error allocating shard, let's try the next node
+                pass
 
 
 class ElasticNodes(Nodes):
