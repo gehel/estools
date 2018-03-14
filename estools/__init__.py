@@ -280,6 +280,9 @@ class ElasticNodes(Nodes):
     def stop_elasticsearch(self):
         self.stop_service('elasticsearch')
 
+    def start_elasticsearch(self):
+        self.start_service('elasticsearch')
+
     def wait_for_elasticsearch(self):
         self.logger.info('waiting for elasticsearch to be up on %s', self)
         wait_for(
@@ -296,6 +299,9 @@ class ElasticNodes(Nodes):
 
     def upgrade_elasticsearch(self):
         self.upgrade_packages(['elasticsearch', 'wmf-elasticsearch-search-plugins'])
+
+    def upgrade_elasticsearch_plugins(self):
+        self.upgrade_packages(['wmf-elasticsearch-search-plugins'])
 
 
 class ScriptNode(Nodes):

@@ -2,6 +2,7 @@ from __future__ import print_function
 
 import logging
 import time
+from contextlib import contextmanager
 
 from datetime import timedelta
 
@@ -55,18 +56,11 @@ def wait_for(condition, timeout=timedelta(seconds=30), retry_period=timedelta(se
             raise TimeoutException()
 
 
-def timed(action, message):
-    """
-    >>> from freezegun import freeze_time
-    >>> from datetime import timedelta
-    >>> from mock import patch
-    >>> with freeze_time() as t:
-    ...   timed(action=lambda: t.tick(timedelta(seconds=10)), message="my message")
-
-    """
+@contextmanager
+def timer(message):
     start_time = time.time()
     try:
-        return action()
+        yield
     finally:
         end_time = time.time()
         logger = logging.getLogger('estools.timer')

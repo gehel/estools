@@ -1,4 +1,5 @@
 import logging
+from contextlib import contextmanager
 
 from cumin.transport import Transport
 from datetime import timedelta, datetime
@@ -48,13 +49,21 @@ class Nodes(object):
     def schedule_downtime(self, duration, message):
         self.icinga.downtime(self, duration, message)
 
-    def disable_puppet(self, message):
+    @contextmanager
+    def puppet_disabled(self, message):
+        self._disable_puppet(message=message)
+        try:
+            yield
+        finally:
+            self._enable_puppet(message=message)
+
+    def _disable_puppet(self, message):
         self.logger.info('disable puppet on %s', self)
         self.execute('disable-puppet "{message}"'.format(message=message), safe=False)
         if not self.dry_run and self.is_puppet_enabled():
             raise RemoteExecutionError('Puppet still enabled.')
 
-    def enable_puppet(self, message):
+    def _enable_puppet(self, message):
         self.logger.info('enable puppet on %s', self)
         self.execute('enable-puppet "{message}"'.format(message=message), safe=False)
         if not self.dry_run and not self.is_puppet_enabled():
