@@ -255,6 +255,7 @@ class ElasticsearchCluster(object):
         nodes = self.elasticsearch.cat.nodes(h='name')
         for node in nodes.splitlines():
             try:
+                self.logger.info('Trying to allocate [%s]:[%s] on [%s]', shard['index'], shard['shard'], node)
                 self.elasticsearch.cluster.reroute(body={
                     'commands': [{
                         'allocate_replica': {
@@ -264,6 +265,7 @@ class ElasticsearchCluster(object):
                     }]
                 })
                 # successful allocation, we can exit
+                self.logger.info('allocation successful')
                 return
             except RequestError:
                 # error allocating shard, let's try the next node

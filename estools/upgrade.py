@@ -95,8 +95,11 @@ def reboot_nodes(cluster, nodes, message, wait_for_relocations):
             nodes.pool()
             logger.info('reboot done for %s', nodes)
 
+        time.sleep(120)
+        cluster.force_allocation_of_all_replicas()
+
         try:
-            timed(action=lambda: cluster.wait_for_green(timeout=timedelta(minutes=30), max_delayed_jobs=15000), message='wait for green')
+            timed(action=lambda: cluster.wait_for_green(timeout=timedelta(minutes=15), max_delayed_jobs=15000), message='wait for green')
         except MaxWriteQueueExceeded as e:
             logger.warn('Write queue size has grown too large, unfreezing writes (delayed jobs: %d)', e.queue_status['delayed'])
         except TimeoutException:
