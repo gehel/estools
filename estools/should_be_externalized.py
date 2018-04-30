@@ -150,6 +150,9 @@ class Nodes(object):
             return
         self.wait_for_reboot(reboot_time)
 
+    def drop_disk_cache(self):
+        self.execute('bash -c "echo 1 > /proc/sys/vm/drop_caches"', safe=False)
+
     def execute_single(self, command, safe):
         rc, results = self.execute(command, safe)
         # we executed on a single node, there should be a single result

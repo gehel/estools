@@ -64,13 +64,14 @@ def execute_on_nodes(cluster, message, nodes, task, wait_for_relocations):
 
                     nodes.pool()
                 # replication enabled
-                time.sleep(120)
-                cluster.force_allocation_of_all_replicas()
+
+                # time.sleep(60)
+                # cluster.force_allocation_of_all_replicas()
 
                 try:
                     with timer('wait for green'):
                         # wait 15' or until the write queue is too large to thaw writes
-                        cluster.wait_for_green(timeout=timedelta(minutes=15), max_delayed_jobs=15000)
+                        cluster.wait_for_green(timeout=timedelta(minutes=15), max_delayed_jobs=3000)
                 except MaxWriteQueueExceeded as e:
                     logger.warning(
                         'Write queue size has grown too large, thawing writes and continuing (delayed jobs: %d)',
@@ -108,10 +109,22 @@ def upgrade_plugins(nodes):
     logger.info('starting plugin upgrade for %s', nodes)
 
     nodes.stop_elasticsearch()
-    with timer('upgrade elasticsearch'):
+    with timer('upgrade plugins'):
         nodes.upgrade_elasticsearch_plugins()
+
+    # since we are changing NUMA, we need to ensure we have enough mem available on each NUMA node (that's a one off)
+    nodes.drop_disk_cache()
+
     nodes.start_elasticsearch()
     logger.info('plugin upgrade upgrade done for %s', nodes)
+
+
+def restart_elasticsearch(nodes):
+    logger.info('restarting %s', nodes)
+
+    nodes.stop_elasticsearch()
+    nodes.start_elasticsearch()
+    logger.info('restart completed for %s', nodes)
 
 
 def reboot_nodes(nodes):
@@ -122,11 +135,11 @@ def reboot_nodes(nodes):
 
 
 if __name__ == '__main__':
-    start_time = parser.parse('2018-03-01T06:00:00')
+    start_time = parser.parse('2018-04-25T12:00:00')
     execute_on_cluster(
-        message='rebooting elasticsearch cluster',
+        message='upgrading plugins and enable UseNUMA',
         phab_number=None,
         start_time=start_time,
         wait_for_relocations=False,
-        task=reboot_nodes,
+        task=upgrade_plugins,
         dry_run=False)

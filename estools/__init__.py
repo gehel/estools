@@ -5,11 +5,13 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 import logging
+from random import shuffle
+
 import curator
 from elasticsearch import Elasticsearch, TransportError, ConflictError, RequestError
 
 from estools.should_be_externalized import Nodes, Icinga, RemoteExecutionError
-from estools.utils import wait_for, timed
+from estools.utils import wait_for
 
 elasticsearch_clusters = {
     'search': {
@@ -34,8 +36,8 @@ elasticsearch_clusters = {
     'test': {
         'local': {
             'endpoint': 'localhost:9200',
-            'suffix': 'eqiad.wmnet',
-            'dc_name': 'eqiad',
+            'suffix': 'codfw.wmnet',
+            'dc_name': 'codfw',
         },
     },
 }
@@ -240,23 +242,31 @@ class ElasticsearchCluster(object):
         return b
 
     def force_allocation_of_all_replicas(self):
-        while True:
+        max = len(self.unassigned_shards())
+        i = 0
+        while i < max:
             unassigned = self.unassigned_shards()
             if len(unassigned) == 0:
                 # no more unassigned shards, we're done
                 return
             self.force_allocation_of_shard(unassigned[0])
+            i = i + 1
 
     def unassigned_shards(self):
         shards = self.elasticsearch.cat.shards(format='json', h='index,shard,state')
         return [s for s in shards if s['state'] == 'UNASSIGNED']
 
     def force_allocation_of_shard(self, shard):
-        nodes = self.elasticsearch.cat.nodes(h='name')
-        for node in nodes.splitlines():
+        if self.is_shard_assigned(shard):
+            self.logger.debug('Shard [%s:%s] is already assigned', shard['index'], shard['shard'])
+            return
+        es_nodes = self.elasticsearch.cat.nodes(h='name').splitlines()
+        # shuffle nodes so that we don't allocate all shards on the same node
+        shuffle(es_nodes)
+        for node in es_nodes:
             try:
-                self.logger.info('Trying to allocate [%s]:[%s] on [%s]', shard['index'], shard['shard'], node)
-                self.elasticsearch.cluster.reroute(body={
+                self.logger.info('Trying to allocate [%s:%s] on [%s]', shard['index'], shard['shard'], node)
+                self.elasticsearch.cluster.reroute(retry_failed=True, body={
                     'commands': [{
                         'allocate_replica': {
                             'index': shard['index'], 'shard': shard['shard'],
@@ -270,6 +280,12 @@ class ElasticsearchCluster(object):
             except RequestError:
                 # error allocating shard, let's try the next node
                 pass
+        self.logger.warning('Could not reallocate shard [%s:%s]', shard['index'], shard['shard'])
+
+    def is_shard_assigned(self, shard):
+        shards = self.elasticsearch.cat.shards(index=shard['index'], h='sh,st')
+        match = re.search('{shard}\s*UNASSIGNED'.format(shard=shard['shard']), shards)
+        return match is None
 
 
 class ElasticNodes(Nodes):
