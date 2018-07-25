@@ -16,6 +16,6 @@ with open('/home/gehel/.cumin/config.yaml', 'r') as f:
 
 es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
 
-cluster = ElasticsearchCluster(es, dc_name='eqiad', script_node=None, cumin_config=None, node_suffix='eqiad.wmnet', icinga=None, sudo=True, dry_run=True)
+cluster = ElasticsearchCluster(es, dc_name='codfw', script_node=None, cumin_config=None, node_suffix='codfw.wmnet', icinga=None, sudo=True, dry_run=True)
 
 cluster.force_allocation_of_all_replicas()

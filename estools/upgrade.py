@@ -71,7 +71,7 @@ def execute_on_nodes(cluster, message, nodes, task, wait_for_relocations):
                 try:
                     with timer('wait for green'):
                         # wait 15' or until the write queue is too large to thaw writes
-                        cluster.wait_for_green(timeout=timedelta(minutes=15), max_delayed_jobs=3000)
+                        cluster.wait_for_green(timeout=timedelta(minutes=5))
                 except MaxWriteQueueExceeded as e:
                     logger.warning(
                         'Write queue size has grown too large, thawing writes and continuing (delayed jobs: %d)',
@@ -86,8 +86,8 @@ def execute_on_nodes(cluster, message, nodes, task, wait_for_relocations):
         with timer('wait for green'):
             cluster.wait_for_green(timeout=timedelta(minutes=90))
 
-        with timer('wait for write queue to drain'):
-            cluster.wait_for_write_queue_to_drain()
+        # with timer('wait for write queue to drain'):
+        #     cluster.wait_for_write_queue_to_drain()
 
         if wait_for_relocations:
             with timer('wait for no relocation'):
@@ -112,10 +112,8 @@ def upgrade_plugins(nodes):
     with timer('upgrade plugins'):
         nodes.upgrade_elasticsearch_plugins()
 
-    # since we are changing NUMA, we need to ensure we have enough mem available on each NUMA node (that's a one off)
-    nodes.drop_disk_cache()
-
     nodes.start_elasticsearch()
+
     logger.info('plugin upgrade upgrade done for %s', nodes)
 
 
@@ -135,11 +133,11 @@ def reboot_nodes(nodes):
 
 
 if __name__ == '__main__':
-    start_time = parser.parse('2018-04-25T12:00:00')
+    start_time = parser.parse('2018-07-25T01:00:00')
     execute_on_cluster(
-        message='upgrading plugins and enable UseNUMA',
-        phab_number=None,
+        message='restart for ',
+        phab_number='T156137',
         start_time=start_time,
         wait_for_relocations=False,
-        task=upgrade_plugins,
+        task=restart_elasticsearch,
         dry_run=False)
